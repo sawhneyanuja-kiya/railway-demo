@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Railway Booking: Race Condition vs. Mutex</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --card: #ffffff;
+      --text: #1f2933;
+      --muted: #52606d;
+      --border: #d9e2ec;
+      --primary: #0f766e;
+      --primary-dark: #0b5c56;
+      --danger: #b42318;
+      --danger-bg: #fef3f2;
+      --success: #067647;
+      --success-bg: #ecfdf3;
+      --log-bg: #102a43;
+      --log-text: #d9e2ec;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      font-weight: 400;
+      line-height: 1.5;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    main {
+      max-width: 880px;
+      margin: 0 auto;
+      padding: 40px 24px 64px;
+    }
+
+    h1 {
+      font-size: 28px;
+      line-height: 1.2;
+      font-weight: 700;
+      margin: 0 0 8px;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      margin: 0 0 32px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 24px;
+      box-shadow: 0 1px 2px rgba(16, 42, 67, 0.06);
+    }
+
+    .seat-label {
+      font-size: 14px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin: 0 0 8px;
+    }
+
+    .seat-count {
+      font-size: 64px;
+      line-height: 1.2;
+      font-weight: 700;
+      margin: 0;
+      color: var(--success);
+      transition: color 0.3s ease, transform 0.3s ease;
+    }
+
+    .seat-count[data-state="full"] {
+      color: var(--danger);
+    }
+
+    .seat-count.bump {
+      transform: scale(1.08);
+    }
+
+    .status {
+      min-height: 24px;
+      color: var(--danger);
+      font-size: 14px;
+      margin: 8px 0 0;
+    }
+
+    .buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    button {
+      font: inherit;
+      font-weight: 600;
+      padding: 12px 20px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: background-color 0.2s ease, transform 0.1s ease, opacity 0.2s ease;
+    }
+
+    button:active:not(:disabled) {
+      transform: translateY(1px);
+    }
+
+    button:focus-visible {
+      outline: 3px solid #9ec5fe;
+      outline-offset: 2px;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn-race {
+      background: var(--danger);
+      color: #ffffff;
+    }
+
+    .btn-race:hover:not(:disabled) {
+      background: #912018;
+    }
+
+    .btn-sync {
+      background: var(--primary);
+      color: #ffffff;
+    }
+
+    .btn-sync:hover:not(:disabled) {
+      background: var(--primary-dark);
+    }
+
+    .btn-reset {
+      background: #ffffff;
+      color: var(--text);
+      border-color: var(--border);
+    }
+
+    .btn-reset:hover:not(:disabled) {
+      background: #f0f4f8;
+    }
+
+    .result {
+      min-height: 48px;
+      padding: 12px 16px;
+      border-radius: 8px;
+      background: #f0f4f8;
+      color: var(--text);
+      font-size: 15px;
+    }
+
+    .result.bad {
+      background: var(--danger-bg);
+      color: var(--danger);
+    }
+
+    .result.good {
+      background: var(--success-bg);
+      color: var(--success);
+    }
+
+    .log-title {
+      font-size: 16px;
+      font-weight: 700;
+      margin: 0 0 12px;
+    }
+
+    .log {
+      background: var(--log-bg);
+      color: var(--log-text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      border-radius: 8px;
+      padding: 16px;
+      height: 320px;
+      overflow-y: auto;
+      margin: 0;
+      white-space: pre-wrap;
+    }
+
+    @media (max-width: 600px) {
+      main { padding: 24px 16px 48px; }
+      .seat-count { font-size: 48px; }
+      button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Railway Booking: Race Condition vs. Mutex</h1>
+    <p class="subtitle">One train, one seat. Two users try to book at the same time.</p>
+
+    <section class="card">
+      <p class="seat-label">Seats available in the database</p>
+      <p id="seats" class="seat-count">-</p>
+      <p id="status" class="status" role="alert"></p>
+    </section>
+
+    <section class="card">
+      <div class="buttons">
+        <button id="btn-race" class="btn-race">Trigger Race Condition</button>
+        <button id="btn-sync" class="btn-sync">Trigger Synchronized Booking</button>
+        <button id="btn-reset" class="btn-reset">Reset Database</button>
+      </div>
+      <div id="result" class="result">Press a button to start two booking requests at the same time.</div>
+    </section>
+
+    <section class="card">
+      <h2 class="log-title">Execution Log</h2>
+      <pre id="log" class="log"></pre>
+    </section>
+  </main>
+
+  <script>
+    const seatsEl = document.getElementById("seats");
+    const statusEl = document.getElementById("status");
+    const resultEl = document.getElementById("result");
+    const logEl = document.getElementById("log");
+    const buttons = [
+      document.getElementById("btn-race"),
+      document.getElementById("btn-sync"),
+      document.getElementById("btn-reset"),
+    ];
+
+    let lastEventId = 0;
+    let busy = false;
+
+    function setBusy(isBusy) {
+      busy = isBusy;
+      buttons.forEach((btn) => (btn.disabled = isBusy));
+    }
+
+    function showResult(text, kind) {
+      resultEl.textContent = text;
+      resultEl.className = "result" + (kind ? " " + kind : "");
+    }
+
+    async function refreshSeats() {
+      try {
+        const res = await fetch("/seats");
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        const previous = seatsEl.textContent;
+        seatsEl.textContent = data.available_seats;
+        seatsEl.dataset.state = data.available_seats > 0 ? "open" : "full";
+        if (previous !== String(data.available_seats)) {
+          seatsEl.classList.add("bump");
+          setTimeout(() => seatsEl.classList.remove("bump"), 300);
+        }
+        statusEl.textContent = "";
+      } catch (err) {
+        statusEl.textContent = "Cannot reach the server. Is the backend running?";
+      }
+    }
+
+    async function pollLog() {
+      try {
+        const res = await fetch("/log?since=" + lastEventId);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        if (data.events.length === 0) return;
+        for (const event of data.events) {
+          logEl.textContent += "[" + event.time + "] " + event.message + "\n";
+          lastEventId = event.id;
+        }
+        logEl.scrollTop = logEl.scrollHeight;
+        refreshSeats();
+      } catch (err) {
+        statusEl.textContent = "Cannot reach the server. Is the backend running?";
+      }
+    }
+
+    // Sends one booking request. Errors are turned into a normal result object
+    // so Promise.all always gets two answers and never rejects.
+    async function bookAs(endpoint, user) {
+      try {
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user: user }),
+        });
+        if (!res.ok) throw new Error("server returned HTTP " + res.status);
+        return await res.json();
+      } catch (err) {
+        return { success: false, user: user, error: err.message };
+      }
+    }
+
+    async function runBookingDemo(endpoint) {
+      if (busy) return;
+      setBusy(true);
+      showResult("Two requests are in flight...", "");
+
+      // Both requests start in the same tick, so they overlap on the server.
+      const [first, second] = await Promise.all([
+        bookAs(endpoint, "User 1"),
+        bookAs(endpoint, "User 2"),
+      ]);
+
+      const results = [first, second];
+      const failed = results.find((r) => r.error);
+      const winners = results.filter((r) => r.success).length;
+
+      if (failed) {
+        showResult("A request failed: " + failed.error, "bad");
+      } else if (winners === 2) {
+        showResult("DOUBLE-BOOKING: both users were told they got the only seat.", "bad");
+      } else if (winners === 1) {
+        showResult("No double-booking: one user got the seat, the other was rejected.", "good");
+      } else {
+        showResult("Nobody got a seat. Press Reset Database to run the demo again.", "bad");
+      }
+
+      setBusy(false);
+      refreshSeats();
+    }
+
+    document.getElementById("btn-race").addEventListener("click", () => {
+      runBookingDemo("/book_without_sync");
+    });
+
+    document.getElementById("btn-sync").addEventListener("click", () => {
+      runBookingDemo("/book_with_sync");
+    });
+
+    document.getElementById("btn-reset").addEventListener("click", async () => {
+      if (busy) return;
+      setBusy(true);
+      try {
+        const res = await fetch("/reset", { method: "POST" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        logEl.textContent = "";
+        showResult("Database reset. One seat is available again.", "");
+      } catch (err) {
+        showResult("Reset failed: " + err.message, "bad");
+      }
+      setBusy(false);
+      refreshSeats();
+    });
+
+    refreshSeats();
+    setInterval(pollLog, 300);
+    setInterval(refreshSeats, 1000);
+  </script>
+</body>
+</html>
